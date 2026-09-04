@@ -8,7 +8,7 @@ espalhados pelo codigo e facilita ajustar o jogo depois.
 WIDTH = 800
 HEIGHT = 600
 FPS = 60
-TITLE = "Projeto Zelda-like (Turn-Based)"
+TITLE = "Nymora"
 
 # --- Tiles ---
 TILE_SIZE = 32

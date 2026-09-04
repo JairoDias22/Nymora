@@ -1,34 +1,36 @@
 """
 overworld_state.py
-Estado de exploracao livre. Por enquanto e so uma demo: um quadrado
-(o "player") que anda com as setas do teclado por uma sala vazia.
-
-Quando o sistema de salas (world/room.py) estiver pronto, este estado
-vai delegar o desenho do mapa/colisao pro RoomManager. Por ora, serve
-pra provar que o StateManager e a transicao de fade funcionam.
+Estado de exploracao. Desenha e colide com a sala ativa do RoomManager,
+e troca de sala (com fade) quando o player encosta numa porta.
 """
 
 import pygame
 from states.base_state import BaseState
-from settings import WIDTH, HEIGHT, DARK_GRAY, GREEN, WHITE, STATE_COMBAT
+from settings import WHITE, TILE_SIZE, STATE_COMBAT
+from world.sample_world import build_sample_world
 
-PLAYER_SPEED = 220  # pixels por segundo
+PLAYER_SPEED = 220
 
 
 class OverworldState(BaseState):
     def enter(self, **kwargs):
-        # posicao inicial do player. Se vier de uma transicao de sala,
-        # dava pra usar kwargs.get("spawn_pos", (...)) aqui.
-        self.player_pos = list(kwargs.get("spawn_pos", (WIDTH // 2, HEIGHT // 2)))
-        self.player_size = 28
-        self.font = pygame.font.SysFont(None, 26)
+        # o mundo so e criado na PRIMEIRA vez que entra nesse estado -
+        # assim, voltar do combate nao reseta as salas nem a posicao
+        if not hasattr(self, "room_manager"):
+            self.room_manager = build_sample_world()
+
+        self.player_size = 24
+        spawn = kwargs.get("spawn_pos")
+        if spawn is None:
+            spawn = (TILE_SIZE * 2, TILE_SIZE * 2)
+        self.player_pos = list(spawn)
+        self.font = pygame.font.SysFont(None, 22)
 
     def exit(self):
         pass
 
     def handle_event(self, event):
         if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-            # demo: aperta espaco pra "encontrar um inimigo" e entrar em combate
             self.game.state_manager.change_state(STATE_COMBAT, enemy_name="Slime")
 
     def update(self, dt):
@@ -42,28 +44,51 @@ class OverworldState(BaseState):
             dy -= 1
         if keys[pygame.K_DOWN] or keys[pygame.K_s]:
             dy += 1
-
-        # normaliza diagonal pra nao andar mais rapido na diagonal
         if dx != 0 and dy != 0:
             dx *= 0.7071
             dy *= 0.7071
 
-        self.player_pos[0] += dx * PLAYER_SPEED * dt
-        self.player_pos[1] += dy * PLAYER_SPEED * dt
-
+        room = self.room_manager.current_room
         half = self.player_size / 2
-        self.player_pos[0] = max(half, min(WIDTH - half, self.player_pos[0]))
-        self.player_pos[1] = max(half, min(HEIGHT - half, self.player_pos[1]))
+
+        # move X e Y separadamente, pra poder "deslizar" na parede em vez
+        # de travar totalmente quando bate na diagonal
+        new_x = self.player_pos[0] + dx * PLAYER_SPEED * dt
+        rect_x = pygame.Rect(0, 0, self.player_size, self.player_size)
+        rect_x.center = (new_x, self.player_pos[1])
+        if not room.collides(rect_x):
+            self.player_pos[0] = new_x
+
+        new_y = self.player_pos[1] + dy * PLAYER_SPEED * dt
+        rect_y = pygame.Rect(0, 0, self.player_size, self.player_size)
+        rect_y.center = (self.player_pos[0], new_y)
+        if not room.collides(rect_y):
+            self.player_pos[1] = new_y
+
+        # checa se encostou numa porta - so dispara se nao tiver fade rolando,
+        # senao troca de sala varias vezes seguidas por engano
+        player_rect = pygame.Rect(0, 0, self.player_size, self.player_size)
+        player_rect.center = self.player_pos
+        door = room.get_door_at(player_rect)
+        if door and not self.game.state_manager.is_transitioning:
+            self._go_through_door(door)
+
+    def _go_through_door(self, door):
+        def on_black():
+            spawn_px = self.room_manager.change_room(door.target_room, door.spawn)
+            self.player_pos = list(spawn_px)
+        self.game.state_manager.fade_action(on_black)
 
     def draw(self, screen):
-        screen.fill(DARK_GRAY)
+        room = self.room_manager.current_room
+        room.draw(screen)
 
         rect = pygame.Rect(0, 0, self.player_size, self.player_size)
         rect.center = (int(self.player_pos[0]), int(self.player_pos[1]))
-        pygame.draw.rect(screen, GREEN, rect)
+        pygame.draw.rect(screen, (60, 200, 90), rect)
 
         text = self.font.render(
-            "OVERWORLD (demo) - setas/WASD move | ESPACO simula encontro",
+            "Setas/WASD anda | borda amarela = porta pra outra sala | ESPACO simula combate",
             True, WHITE,
         )
-        screen.blit(text, (16, 16))
+        screen.blit(text, (10, 10))

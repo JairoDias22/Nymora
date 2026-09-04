@@ -1,13 +1,13 @@
 """
 state_manager.py
 Controla qual estado do jogo esta ativo (Overworld, Combat, Menu...)
-e cuida da transicao (fade) entre eles.
+e cuida da transicao (fade) tanto entre ESTADOS quanto entre SALAS
+dentro do mesmo estado (ex: Overworld trocando de sala).
 
-A ideia: em vez de criar um "TransitionState" separado que os outros
-estados precisam conhecer, a transicao fica embutida aqui dentro.
-Assim, OverworldState e CombatState nao sabem (e nao precisam saber)
-que existe uma animacao de fade rolando - eles so pedem
-'troca pro estado X' e o StateManager cuida do resto.
+A logica de fade fica centralizada aqui: escurece a tela, executa uma
+acao "as escuras" (troca de estado OU troca de sala, quem chamou decide),
+e depois clareia. Quem usa isso (change_state / fade_action) so entrega
+um callback; o StateManager nao precisa saber o que tem dentro dele.
 """
 
 import pygame
@@ -17,7 +17,7 @@ from settings import WIDTH, HEIGHT, FADE_SPEED, BLACK
 class StateManager:
     def __init__(self, game):
         self.game = game
-        self.states = {}          # nome -> instancia do estado (BaseState)
+        self.states = {}
         self.current_name = None
         self.current_state = None
 
@@ -25,20 +25,20 @@ class StateManager:
         self._transitioning = False
         self._fade_alpha = 0
         self._fade_direction = 1     # 1 = escurecendo, -1 = clareando
-        self._pending_state = None   # nome do estado pra onde vamos
-        self._pending_kwargs = {}
+        self._on_black = None        # callback executado no pico do preto
 
-        # superficie preta usada na transicao (com canal alpha)
         self._fade_surface = pygame.Surface((WIDTH, HEIGHT)).convert_alpha()
         self._fade_surface.fill(BLACK)
 
+    @property
+    def is_transitioning(self):
+        return self._transitioning
+
     def add_state(self, name, state_instance):
-        """Registra um estado (ex: 'overworld' -> OverworldState(...))."""
         self.states[name] = state_instance
 
     def set_state(self, name, **kwargs):
-        """Troca de estado IMEDIATAMENTE, sem transicao.
-        Util so pra iniciar o jogo no primeiro estado."""
+        """Troca de estado IMEDIATAMENTE, sem fade. So pra iniciar o jogo."""
         if self.current_state:
             self.current_state.exit()
         self.current_name = name
@@ -46,20 +46,32 @@ class StateManager:
         self.current_state.enter(**kwargs)
 
     def change_state(self, name, **kwargs):
-        """Pede uma troca de estado COM transicao de fade.
-        E o metodo que o Overworld/Combat devem chamar
-        (ex: self.game.state_manager.change_state('combat', enemy='slime'))."""
+        """Troca de ESTADO (ex: Overworld -> Combat) com fade."""
+        def _do_change():
+            if self.current_state:
+                self.current_state.exit()
+            self.current_name = name
+            self.current_state = self.states[name]
+            self.current_state.enter(**kwargs)
+
+        self._start_fade(_do_change)
+
+    def fade_action(self, callback):
+        """Roda uma transicao de fade SEM trocar de estado - usado por ex.
+        quando o player muda de sala dentro do proprio Overworld.
+        'callback' e chamado no momento em que a tela esta 100% preta."""
+        self._start_fade(callback)
+
+    def _start_fade(self, on_black):
         if self._transitioning:
             return  # ja tem uma transicao rolando, ignora pedidos extras
         self._transitioning = True
         self._fade_direction = 1
         self._fade_alpha = 0
-        self._pending_state = name
-        self._pending_kwargs = kwargs
+        self._on_black = on_black
 
     def handle_event(self, event):
-        # durante a transicao, ignoramos input do jogo (evita o jogador
-        # agir "as cegas" enquanto a tela esta preta)
+        # durante a transicao, ignora input do jogo (evita agir "as cegas")
         if not self._transitioning and self.current_state:
             self.current_state.handle_event(event)
 
@@ -72,27 +84,21 @@ class StateManager:
     def _update_fade(self):
         self._fade_alpha += self._fade_direction * FADE_SPEED
 
-        # tela ficou totalmente preta -> e o momento de trocar o estado
-        # de verdade, por baixo do preto, sem o jogador ver a troca
         if self._fade_alpha >= 255 and self._fade_direction == 1:
             self._fade_alpha = 255
-            if self.current_state:
-                self.current_state.exit()
-            self.current_name = self._pending_state
-            self.current_state = self.states[self._pending_state]
-            self.current_state.enter(**self._pending_kwargs)
+            if self._on_black:
+                self._on_black()
             self._fade_direction = -1  # comeca a clarear
 
-        # terminou de clarear -> transicao acabou
         elif self._fade_alpha <= 0 and self._fade_direction == -1:
             self._fade_alpha = 0
             self._transitioning = False
+            self._on_black = None
 
     def draw(self, screen):
         if self.current_state:
             self.current_state.draw(screen)
 
-        # desenha o overlay preto por cima, com a transparencia atual
         if self._transitioning or self._fade_alpha > 0:
             self._fade_surface.set_alpha(self._fade_alpha)
             screen.blit(self._fade_surface, (0, 0))
